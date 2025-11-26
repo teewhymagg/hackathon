@@ -109,12 +109,8 @@ venv.bak/
 dmypy.json
 
 # Pyre type checker
-
-
 .pyre/
 
-
-.DS_Store
 # IDE specific files
 .idea/
 .vscode/
@@ -129,21 +125,4 @@ model_weights/
 # Docker
 .docker/
 docker-volumes/
-
-
-hub/
-
-*.mp3
-
-# Image files
-*.png
-
-# WhisperLive optimization outputs
-data/
-results/
-test_data/
-*.wav
-*.webm
-*.mp4
-*.txt
-manifest.csv
+models/

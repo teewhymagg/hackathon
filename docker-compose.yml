@@ -1,0 +1,157 @@
+name: hackathon_bot_stack
+services:
+  api-gateway:
+    build:
+      context: .
+      dockerfile: services/api-gateway/Dockerfile
+    ports:
+      - "${API_GATEWAY_HOST_PORT:-18056}:8000"
+    environment:
+      - ADMIN_API_URL=http://admin-api:8001
+      - BOT_MANAGER_URL=http://bot-manager:8080
+      - TRANSCRIPTION_COLLECTOR_URL=http://transcription-collector:8000
+      - REDIS_URL=redis://redis:6379/0
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    depends_on:
+      admin-api:
+        condition: service_started
+      bot-manager:
+        condition: service_started
+      transcription-collector:
+        condition: service_started
+    restart: unless-stopped
+
+  admin-api:
+    build:
+      context: .
+      dockerfile: services/admin-api/Dockerfile
+    ports:
+      - "${ADMIN_API_HOST_PORT:-18057}:8001"
+    environment:
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=hackathon_bot
+      - DB_USER=postgres
+      - DB_PASSWORD=postgres
+      - ADMIN_API_TOKEN=${ADMIN_API_TOKEN}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  bot-manager:
+    build:
+      context: .
+      dockerfile: services/bot-manager/Dockerfile
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - BOT_IMAGE_NAME=${BOT_IMAGE_NAME:-hackathon_bot:hackathon}
+      - DOCKER_NETWORK=${COMPOSE_PROJECT_NAME:-hackathon_bot_stack}_default
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=hackathon_bot
+      - DB_USER=postgres
+      - DB_PASSWORD=postgres
+      - DOCKER_HOST=unix://var/run/docker.sock
+      - DEVICE_TYPE=${DEVICE_TYPE:-cpu}
+      - WHISPER_LIVE_URL=ws://whisperlive:9090/ws
+      - ADMIN_TOKEN=${ADMIN_API_TOKEN}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      redis:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  whisperlive:
+    build:
+      context: .
+      dockerfile: services/WhisperLive/Dockerfile.cpu
+    profiles: ["cpu"]
+    environment:
+      - REDIS_STREAM_URL=redis://redis:6379/0/transcription_segments
+      - TRANSCRIPTION_COLLECTOR_URL=redis://redis:6379/0/transcription_segments
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_DB=0
+      - REDIS_STREAM_NAME=transcription_segments
+      - LANGUAGE_DETECTION_SEGMENTS=${LANGUAGE_DETECTION_SEGMENTS:-10}
+      - VAD_FILTER_THRESHOLD=${VAD_FILTER_THRESHOLD:-0.2}
+      - DEVICE_TYPE=cpu
+      - WHISPER_MODEL_SIZE=${WHISPER_MODEL_SIZE:-tiny}
+      - WL_MAX_CLIENTS=${WL_MAX_CLIENTS:-10}
+    command: --port 9090 --backend faster_whisper --faster_whisper_custom_model_path ${WHISPER_MODEL_SIZE:-tiny}
+    expose:
+      - "9090"
+      - "9091"
+    depends_on:
+      transcription-collector:
+        condition: service_started
+    restart: unless-stopped
+
+  transcription-collector:
+    build:
+      context: .
+      dockerfile: services/transcription-collector/Dockerfile
+    ports:
+      - "${TRANSCRIPTION_COLLECTOR_HOST_PORT:-18123}:8000"
+    volumes:
+      - ./alembic.ini:/app/alembic.ini
+      - ./libs/shared-models/alembic:/app/alembic
+    environment:
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=hackathon_bot
+      - DB_USER=postgres
+      - DB_PASSWORD=postgres
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_STREAM_NAME=transcription_segments
+      - REDIS_CONSUMER_GROUP=collector_group
+      - REDIS_STREAM_READ_COUNT=10
+      - REDIS_STREAM_BLOCK_MS=2000
+      - ADMIN_TOKEN=${ADMIN_API_TOKEN}
+      - BACKGROUND_TASK_INTERVAL=10
+      - IMMUTABILITY_THRESHOLD=30
+      - REDIS_SEGMENT_TTL=3600
+      - REDIS_CLEANUP_THRESHOLD=86400
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    depends_on:
+      redis:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  redis:
+    image: redis:7.0-alpine
+    command:
+      ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
+    volumes:
+      - redis-data:/data
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      - POSTGRES_DB=hackathon_bot
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d hackathon_bot"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    ports:
+      - "${POSTGRES_HOST_PORT:-15438}:5432"
+    restart: unless-stopped
+
+volumes:
+  redis-data:
+  postgres-data:
