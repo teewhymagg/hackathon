@@ -342,4 +342,43 @@ export const googlePeopleButtonSelectors: string[] = [
   'button[data-tooltip*="Participants"]'
 ];
 
+// Google Meet chat selectors
+export const googleChatButtonSelectors: string[] = [
+  'button[aria-label*="Chat"]',
+  'button[aria-label*="chat"]',
+  'button[data-tooltip*="Chat"]',
+  'button[data-tooltip*="chat"]',
+  '[role="button"][aria-label*="Chat"]',
+  '[role="button"][aria-label*="chat"]'
+];
+
+export const googleChatInputSelectors: string[] = [
+  'textarea[aria-label*="Send a message"]',
+  'textarea[aria-label*="send a message"]',
+  'div[contenteditable="true"][aria-label*="message"]',
+  'div[contenteditable="true"][aria-label*="Message"]',
+  'textarea[placeholder*="message"]',
+  'textarea[placeholder*="Message"]',
+  '[contenteditable="true"][data-placeholder*="message"]',
+  '[contenteditable="true"][data-placeholder*="Message"]'
+];
+
+export const googleChatSendButtonSelectors: string[] = [
+  'button[aria-label*="Send"]',
+  'button[aria-label*="send"]',
+  'button[data-tooltip*="Send"]',
+  'button[data-tooltip*="send"]',
+  '[role="button"][aria-label*="Send"]',
+  'button:has-text("Send")'
+];
+
+export const googleChatPanelSelectors: string[] = [
+  '[role="dialog"][aria-label*="Chat"]',
+  '[role="dialog"][aria-label*="chat"]',
+  '[aria-label*="Chat panel"]',
+  '[aria-label*="chat panel"]',
+  '[data-chat-panel]',
+  '.chat-panel'
+];
+
 

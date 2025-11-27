@@ -60,6 +60,12 @@ services:
       - DEVICE_TYPE=${DEVICE_TYPE:-cpu}
       - WHISPER_LIVE_URL=ws://whisperlive:9090/ws
       - ADMIN_TOKEN=${ADMIN_API_TOKEN}
+      - ENABLE_MEETING_ASSISTANT=${ENABLE_MEETING_ASSISTANT:-false}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-5-nano}
+      - ANALYSIS_INTERVAL_SECONDS=${ANALYSIS_INTERVAL_SECONDS:-30}
+      - MESSAGE_DEDUP_WINDOW_SECONDS=${MESSAGE_DEDUP_WINDOW_SECONDS:-300}
+      - MAX_MESSAGES_PER_MINUTE=${MAX_MESSAGES_PER_MINUTE:-2}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
