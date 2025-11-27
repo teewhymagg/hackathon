@@ -46,6 +46,9 @@ Open `.env` and set at least:
 | Variable                        | Purpose                                                                  |
 | ------------------------------- | ------------------------------------------------------------------------ |
 | `ADMIN_API_TOKEN`               | Shared secret used by Admin API + bot-manager signing                    |
+| `OPENAI_API_KEY`                | Required for the default ChatGPT-4o transcription backend (`WHISPER_BACKEND=openai`) |
+| `WHISPER_BACKEND`               | Choose `openai` (default) or `faster_whisper` if you need the bundled local model |
+| `OPENAI_TRANSCRIBE_*`           | Optional knobs for chunk length, retries, prompts when using OpenAI      |
 | `BOT_IMAGE_NAME` (optional)     | Defaults to `hackathon_bot:hackathon`; override if you publish elsewhere |
 | `WHISPER_MODEL_SIZE` (optional) | `tiny`, `base`, `small`, … depending on CPU budget                       |
 
@@ -73,6 +76,7 @@ You can keep the provided ports unless they clash locally.
    - Admin API (FastAPI docs): `http://localhost:18057/docs`
    - Transcription Collector health: `http://localhost:18123/health`
    - Postgres: `localhost:15438`
+   - `whisperlive` now defaults to the OpenAI backend—double-check `OPENAI_API_KEY` is set before calling `make up`, otherwise requests will fail with 401s from the transcription bridge.
 
 3. **Ensure WhisperLive is running**. If you left the `profiles: ["cpu"]` line in `docker-compose.yml`, launch it with the profile:
 
@@ -125,7 +129,7 @@ curl -X POST http://localhost:18056/bots \
   -H "X-API-Key: $USER_TOKEN" \
   -d '{
         "platform": "google_meet",
-        "native_meeting_id": "nox-nvbs-wpk",
+        "native_meeting_id": "qjx-qnco-uso",
         "display_name": "Scrum Recorder"
       }'
 ```
@@ -152,7 +156,7 @@ When the bot joins successfully you will see `status: active` in the `/bots/{id}
 
 ```bash
 curl -H "X-API-Key: $USER_TOKEN" \
-     http://localhost:18056/transcripts/google_meet/nox-nvbs-wpk
+     http://localhost:18056/transcripts/google_meet/qjx-qnco-uso
 ```
 
 Response contains meeting metadata plus the ordered `segments` array (`start`, `end`, `text`, `language`, timestamps).

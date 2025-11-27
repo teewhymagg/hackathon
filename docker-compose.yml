@@ -84,7 +84,15 @@ services:
       - DEVICE_TYPE=cpu
       - WHISPER_MODEL_SIZE=${WHISPER_MODEL_SIZE:-tiny}
       - WL_MAX_CLIENTS=${WL_MAX_CLIENTS:-10}
-    command: --port 9090 --backend faster_whisper --faster_whisper_custom_model_path ${WHISPER_MODEL_SIZE:-tiny}
+      - WHISPER_BACKEND=${WHISPER_BACKEND:-openai}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENAI_TRANSCRIBE_MODEL=${OPENAI_TRANSCRIBE_MODEL:-gpt-4o-transcribe}
+      - OPENAI_TRANSCRIBE_CHUNK_SEC=${OPENAI_TRANSCRIBE_CHUNK_SEC:-15}
+      - OPENAI_TRANSCRIBE_MIN_AUDIO_S=${OPENAI_TRANSCRIBE_MIN_AUDIO_S:-5}
+      - OPENAI_TRANSCRIBE_MAX_RETRIES=${OPENAI_TRANSCRIBE_MAX_RETRIES:-3}
+      - OPENAI_TRANSCRIBE_RETRY_BACKOFF_S=${OPENAI_TRANSCRIBE_RETRY_BACKOFF_S:-2}
+      - OPENAI_TRANSCRIBE_LANGUAGE=${OPENAI_TRANSCRIBE_LANGUAGE:-}
+    command: --port 9090 --backend ${WHISPER_BACKEND:-openai} --faster_whisper_custom_model_path ${WHISPER_MODEL_SIZE:-tiny}
     expose:
       - "9090"
       - "9091"

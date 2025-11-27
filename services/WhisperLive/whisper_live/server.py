@@ -4,6 +4,7 @@ import threading
 import json
 import functools
 import logging
+import tempfile
 from enum import Enum
 from typing import List, Optional
 import datetime
@@ -13,6 +14,7 @@ import socket  # Added to resolve container IP for ws_url
 
 import torch
 import numpy as np
+import soundfile as sf
 from websockets.sync.server import serve
 from websockets.exceptions import ConnectionClosed
 from whisper_live.vad import VoiceActivityDetector
@@ -32,6 +34,8 @@ import threading
 # Import Redis
 import redis
 import uuid
+from openai import OpenAI
+from openai import APIError, APITimeoutError, RateLimitError
 
 # Setup basic logging (env-driven)
 _WL_LOG_LEVEL = os.getenv("WL_LOG_LEVEL", "INFO").strip().upper()
@@ -522,6 +526,7 @@ class ClientManager:
 class BackendType(Enum):
     FASTER_WHISPER = "faster_whisper"
     TENSORRT = "tensorrt"
+    OPENAI = "openai"
 
     @staticmethod
     def valid_types() -> List[str]:
@@ -536,6 +541,9 @@ class BackendType(Enum):
 
     def is_tensorrt(self) -> bool:
         return self == BackendType.TENSORRT
+
+    def is_openai(self) -> bool:
+        return self == BackendType.OPENAI
 
 
 class TranscriptionServer:
@@ -778,6 +786,19 @@ class TranscriptionServer:
                 client_uid=options.get("uid"),
                 model=self.whisper_tensorrt_path,
                 single_model=self.single_model,
+                platform=options.get("platform"),
+                meeting_url=options.get("meeting_url"),
+                token=options.get("token"),
+                meeting_id=options.get("meeting_id"),
+                collector_client_ref=self.collector_client,
+                server_options=self.server_options
+            )
+        elif backend.is_openai():
+            client = ServeClientOpenAI(
+                websocket,
+                language=options.get("language"),
+                task=options.get("task", "transcribe"),
+                client_uid=options.get("uid"),
                 platform=options.get("platform"),
                 meeting_url=options.get("meeting_url"),
                 token=options.get("token"),
@@ -1931,6 +1952,20 @@ class ServeClientBase(object):
         except Exception as e:
             logging.error(f"[ERROR]: Sending data to client: {e}")
 
+    def format_segment(self, start, end, text, completed=False, language=None):
+        """
+        Helper to format a transcription segment payload.
+        """
+        segment = {
+            'start': "{:.3f}".format(start),
+            'end': "{:.3f}".format(end),
+            'text': text,
+            'completed': completed
+        }
+        if language is not None:
+            segment['language'] = language
+        return segment
+
     def disconnect(self):
         """
         Notify the client of disconnection and send a disconnect message.
@@ -2151,35 +2186,6 @@ class ServeClientTensorRT(ServeClientBase):
 
             except Exception as e:
                 logging.error(f"[ERROR]: {e}")
-
-    def format_segment(self, start, end, text, completed=False, language=None):
-        """
-        Formats a transcription segment with precise start and end times alongside the transcribed text.
-
-        Args:
-            start (float): The start time of the transcription segment in seconds.
-            end (float): The end time of the transcription segment in seconds.
-            text (str): The transcribed text corresponding to the segment.
-            completed (bool): Whether the segment is completed or partial.
-            language (str): The detected language for this segment.
-
-        Returns:
-            dict: A dictionary representing the formatted transcription segment, including
-                'start' and 'end' times as strings with three decimal places, the 'text'
-                of the transcription, 'completed' status, and 'language' if provided.
-        """
-        segment = {
-            'start': "{:.3f}".format(start),
-            'end': "{:.3f}".format(end),
-            'text': text,
-            'completed': completed
-        }
-        
-        # Add language if provided
-        if language is not None:
-            segment['language'] = language
-            
-        return segment
 
     def update_segments(self, segments, duration):
         """
@@ -2788,6 +2794,189 @@ class ServeClientFasterWhisper(ServeClientBase):
                 self.timestamp_offset += offset
 
         return last_segment
+
+# Add OpenAI-backed client implementation
+class ServeClientOpenAI(ServeClientBase):
+    """ServeClient variant that streams audio chunks to OpenAI's hosted transcription API."""
+
+    def __init__(
+        self,
+        websocket,
+        task="transcribe",
+        language=None,
+        client_uid=None,
+        platform=None,
+        meeting_url=None,
+        token=None,
+        meeting_id=None,
+        collector_client_ref: Optional[TranscriptionCollectorClient] = None,
+        server_options: Optional[dict] = None,
+    ):
+        super().__init__(
+            websocket,
+            language,
+            task,
+            client_uid,
+            platform,
+            meeting_url,
+            token,
+            meeting_id,
+            collector_client_ref=collector_client_ref,
+            server_options=server_options,
+        )
+
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            self._fail_startup("OPENAI_API_KEY is not set; cannot start openai backend.")
+            raise RuntimeError("Missing OPENAI_API_KEY for openai backend.")
+
+        self.openai_client = OpenAI(api_key=api_key)
+        self.openai_model = os.getenv("OPENAI_TRANSCRIBE_MODEL", "gpt-4o-transcribe")
+        self.response_format = os.getenv("OPENAI_TRANSCRIBE_RESPONSE_FORMAT", "json")
+        self.prompt = os.getenv("OPENAI_TRANSCRIBE_PROMPT")
+        self.language_hint = os.getenv("OPENAI_TRANSCRIBE_LANGUAGE")
+        if not self.language and self.language_hint:
+            self.language = self.language_hint
+
+        self.chunk_seconds = max(0.5, float(os.getenv("OPENAI_TRANSCRIBE_CHUNK_SEC", "15")))
+        min_audio_env = float(os.getenv("OPENAI_TRANSCRIBE_MIN_AUDIO_S", str(min(self.chunk_seconds, 5.0))))
+        self.min_audio_s = max(0.5, min(self.chunk_seconds, min_audio_env))
+        self.max_retries = max(1, int(os.getenv("OPENAI_TRANSCRIBE_MAX_RETRIES", "3")))
+        self.retry_backoff = max(0.5, float(os.getenv("OPENAI_TRANSCRIBE_RETRY_BACKOFF_S", "2")))
+
+        self.trans_thread = threading.Thread(target=self.speech_to_text, daemon=True)
+        self.trans_thread.start()
+        self.websocket.send(
+            json.dumps(
+                {
+                    "uid": self.client_uid,
+                    "message": self.SERVER_READY,
+                    "backend": "openai",
+                }
+            )
+        )
+
+    def _fail_startup(self, message: str):
+        logging.error(message)
+        try:
+            self.websocket.send(
+                json.dumps(
+                    {
+                        "uid": self.client_uid,
+                        "status": "ERROR",
+                        "message": message,
+                    }
+                )
+            )
+        except Exception:
+            pass
+        self.exit = True
+        try:
+            self.websocket.close()
+        except Exception:
+            pass
+
+    def speech_to_text(self):
+        while not self.exit:
+            if self.frames_np is None:
+                time.sleep(0.05)
+                continue
+
+            self.clip_audio_if_no_valid_segment()
+            input_bytes, duration = self.get_audio_chunk_for_processing()
+            if duration < self.min_audio_s:
+                time.sleep(0.1)
+                continue
+
+            chunk_duration = min(duration, self.chunk_seconds)
+            samples = int(chunk_duration * self.RATE)
+            if samples <= 0:
+                time.sleep(0.05)
+                continue
+
+            audio_chunk = input_bytes[:samples]
+
+            try:
+                text, detected_language = self.transcribe_audio(audio_chunk)
+                if detected_language and not self.language:
+                    self.language = detected_language
+                elif not self.language and self.language_hint:
+                    self.language = self.language_hint
+
+                segments = []
+                if text:
+                    segment = self.format_segment(
+                        self.timestamp_offset,
+                        self.timestamp_offset + chunk_duration,
+                        text,
+                        completed=True,
+                        language=self.language,
+                    )
+                    segments = [segment]
+                    self.transcript.extend(segments)
+
+                self.timestamp_offset += chunk_duration
+
+                if segments:
+                    self.send_transcription_to_client(segments)
+                else:
+                    time.sleep(0.05)
+            except Exception as exc:
+                logging.error(f"[OPENAI] Transcription error: {exc}")
+                time.sleep(0.5)
+
+    def _call_openai(self, params):
+        last_error = None
+        for attempt in range(1, self.max_retries + 1):
+            try:
+                return self.openai_client.audio.transcriptions.create(**params)
+            except (APITimeoutError, RateLimitError, APIError) as err:
+                last_error = err
+                wait_time = self.retry_backoff * attempt
+                logging.warning(
+                    f"[OPENAI] API error (attempt {attempt}/{self.max_retries}): {err}. Retrying in {wait_time:.1f}s"
+                )
+                time.sleep(wait_time)
+            except Exception as err:
+                logging.error(f"[OPENAI] Fatal error: {err}")
+                raise
+        raise last_error if last_error else RuntimeError("OpenAI transcription failed.")
+
+    def transcribe_audio(self, audio_chunk):
+        tmp_path = None
+        try:
+            tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+            sf.write(tmp.name, audio_chunk, self.RATE)
+            tmp_path = tmp.name
+            tmp.close()
+
+            with open(tmp_path, "rb") as audio_file:
+                params = {
+                    "model": self.openai_model,
+                    "file": audio_file,
+                }
+                language = self.language or self.language_hint
+                if language:
+                    params["language"] = language
+                if self.prompt:
+                    params["prompt"] = self.prompt
+                if self.response_format:
+                    params["response_format"] = self.response_format
+
+                response = self._call_openai(params)
+
+            text = getattr(response, "text", None)
+            language = getattr(response, "language", None)
+            if text:
+                text = text.strip()
+            return text, language
+        finally:
+            if tmp_path and os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
+
 
 # Add the missing TranscriptionBuffer class
 class TranscriptionBuffer:

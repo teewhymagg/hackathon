@@ -33,6 +33,8 @@ hackathon/
    Fill in:
 
    - `ADMIN_API_TOKEN`: shared secret for admin endpoints + MeetingToken signing.
+   - `OPENAI_API_KEY`: required for the default `openai` transcription backend (ChatGPT-4o Transcribe).
+   - Optional: tune `WHISPER_BACKEND` (defaults to `openai`) and the chunking knobs (`OPENAI_TRANSCRIBE_*`) if you need local Whisper fallback.
    - Optional overrides (ports, Whisper model size, etc.).
 
 2. **Build the meeting bot image**
@@ -89,6 +91,7 @@ hackathon/
 ## Customization Tips
 
 - Update `docker-compose.yml` to switch `whisperlive` to GPU mode or add extra services (e.g., your AI Scrum Master microservice).
+- Tune the transcription backend: `WHISPER_BACKEND=openai` (default) streams PCM to ChatGPT-4o Transcribe via `OPENAI_API_KEY`; set it to `faster_whisper` to fall back to the bundled local model and ignore the OpenAI knobs.
 - Extend `Makefile` with helper targets (database migrations, log tailing, etc.).
 - Keep parity with the upstream hackathon_bot sources by periodically syncing `services/*` and `libs/shared-models` from the root repo.
 - Build your hackathon-specific code (e.g., standup summarizer) alongside this directory to keep a clean separation from the upstream project.
