@@ -18,6 +18,7 @@ from shared_models.models import (
     TranscriptEmbedding,
     Transcription,
 )
+from shared_models.rag import compute_chunk_hash
 
 
 logging.basicConfig(
@@ -255,6 +256,105 @@ def parse_iso_datetime(value: Optional[str]) -> Optional[datetime]:
         return None
 
 
+def embed_structured_insights(
+    session: Session,
+    meeting: Meeting,
+    insights: Dict[str, Any],
+    client: OpenAI,
+) -> None:
+    """
+    Create embeddings for structured insights content (overview, blockers, action items).
+    These are stored as separate chunks with chunk_type='insight' or 'action_item'.
+    """
+    texts_to_embed = []
+    metadata_list = []
+    
+    # Embed overview
+    overview = insights.get("overview", {})
+    if overview:
+        overview_text = f"Цель встречи: {overview.get('goal', '')}\nРезюме: {overview.get('summary', '')}\nНастроение: {overview.get('sentiment', '')}"
+        texts_to_embed.append(overview_text)
+        metadata_list.append({
+            'chunk_type': 'insight',
+            'text': overview_text,
+            'source': 'overview',
+        })
+    
+    # Embed blockers
+    blockers = insights.get("blockers", [])
+    for blocker in blockers:
+        blocker_text = f"Блокер: {blocker.get('description', '')}\nВладелец: {blocker.get('owner', '')}\nВлияние: {blocker.get('impact', '')}"
+        texts_to_embed.append(blocker_text)
+        metadata_list.append({
+            'chunk_type': 'insight',
+            'text': blocker_text,
+            'source': 'blocker',
+        })
+    
+    # Embed critical deadlines
+    deadlines = insights.get("critical_deadlines", [])
+    for deadline in deadlines:
+        deadline_text = f"Критичный срок: {deadline.get('name', '')}\nОтветственный: {deadline.get('owner', '')}\nДата: {deadline.get('date', '')}\nРиск: {deadline.get('risk', '')}"
+        texts_to_embed.append(deadline_text)
+        metadata_list.append({
+            'chunk_type': 'insight',
+            'text': deadline_text,
+            'source': 'deadline',
+        })
+    
+    # Embed action items
+    action_items = insights.get("action_items", [])
+    for item in action_items:
+        action_text = f"Действие: {item.get('description', '')}\nОтветственный: {item.get('owner', '')}\nСрок: {item.get('due_date', '')}\nПриоритет: {item.get('priority', '')}"
+        texts_to_embed.append(action_text)
+        metadata_list.append({
+            'chunk_type': 'action_item',
+            'text': action_text,
+            'source': 'action_item',
+        })
+    
+    if not texts_to_embed:
+        return
+    
+    # Generate embeddings
+    embeddings_result = client.embeddings.create(
+        model=EMBEDDING_MODEL,
+        input=texts_to_embed
+    )
+    
+    meeting_date = meeting.start_time.date() if meeting.start_time else None
+    
+    # Store embeddings
+    for metadata, embedding_data in zip(metadata_list, embeddings_result.data):
+        chunk_hash = compute_chunk_hash(metadata['text'], meeting.id, metadata['chunk_type'])
+        
+        # Check if chunk already exists
+        existing = session.query(TranscriptEmbedding).filter_by(
+            meeting_id=meeting.id,
+            chunk_hash=chunk_hash
+        ).first()
+        
+        if existing:
+            # Update existing embedding
+            existing.embedding = embedding_data.embedding
+            existing.text = metadata['text']
+        else:
+            # Create new embedding
+            session.add(
+                TranscriptEmbedding(
+                    meeting_id=meeting.id,
+                    text=metadata['text'],
+                    embedding=embedding_data.embedding,
+                    chunk_type=metadata['chunk_type'],
+                    meeting_native_id=meeting.platform_specific_id,
+                    platform=meeting.platform,
+                    chunk_hash=chunk_hash,
+                    meeting_date=meeting_date,
+                    timestamp=meeting.start_time,
+                )
+            )
+
+
 def persist_insights(
     session: Session,
     meeting: Meeting,
@@ -357,6 +457,9 @@ def persist_insights(
             if meeting.start_time
             else None
         )
+        meeting_date = meeting.start_time.date() if meeting.start_time else None
+        chunk_hash = compute_chunk_hash(segment.text, meeting.id, 'transcript')
+        
         session.add(
             TranscriptEmbedding(
                 meeting_id=meeting.id,
@@ -366,6 +469,12 @@ def persist_insights(
                 text=segment.text,
                 timestamp=absolute_ts,
                 embedding=vector,
+                chunk_type='transcript',
+                meeting_native_id=meeting.platform_specific_id,
+                platform=meeting.platform,
+                language=segment.language,
+                chunk_hash=chunk_hash,
+                meeting_date=meeting_date,
             )
         )
 
@@ -402,6 +511,12 @@ def process_meeting(session: Session, meeting: Meeting) -> None:
     meeting.data["insights_ru"] = insights
     if team_context:
         meeting.data["team_roster_snapshot"] = team_context
+
+    # Embed structured insights content
+    try:
+        embed_structured_insights(session, meeting, insights, client)
+    except Exception as e:
+        logger.warning("Failed to embed structured insights for meeting %s: %s", meeting.id, e)
 
     meeting.summary_state = "completed"
     meeting.processed_at = datetime.utcnow()
