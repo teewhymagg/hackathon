@@ -1,11 +1,23 @@
 import sqlalchemy
-from sqlalchemy import (Column, String, Text, Integer, DateTime, Float, ForeignKey, Index, UniqueConstraint)
+from sqlalchemy import (
+    Column,
+    String,
+    Text,
+    Integer,
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
+    UniqueConstraint,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.sql import func, text
 from sqlalchemy.orm import declarative_base, relationship
+from sqlalchemy.ext.mutable import MutableDict
 from datetime import datetime # Needed for Transcription model default
 from shared_models.schemas import Platform # Import Platform for the static method
 from typing import Optional # Added for the return type hint in constructed_meeting_url
+from pgvector.sqlalchemy import Vector
 
 # Define the base class for declarative models
 Base = declarative_base()
@@ -43,13 +55,19 @@ class Meeting(Base):
     bot_container_id = Column(String(255), nullable=True)
     start_time = Column(DateTime, nullable=True)
     end_time = Column(DateTime, nullable=True)
-    data = Column(JSONB, nullable=False, default=text("'{}'::jsonb"))
+    data = Column(MutableDict.as_mutable(JSONB), nullable=False, default=lambda: {})
     created_at = Column(DateTime, server_default=func.now(), index=True)
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+    processed_at = Column(DateTime, nullable=True)
+    summary_state = Column(String(50), nullable=False, server_default='pending')
 
     user = relationship("User", back_populates="meetings")
     transcriptions = relationship("Transcription", back_populates="meeting")
     sessions = relationship("MeetingSession", back_populates="meeting", cascade="all, delete-orphan")
+    metadata_record = relationship("MeetingMetadata", back_populates="meeting", uselist=False, cascade="all, delete-orphan")
+    speaker_highlights = relationship("SpeakerHighlight", back_populates="meeting", cascade="all, delete-orphan")
+    action_items = relationship("ActionItem", back_populates="meeting", cascade="all, delete-orphan")
+    transcript_embeddings = relationship("TranscriptEmbedding", back_populates="meeting", cascade="all, delete-orphan")
 
     # Add composite index for efficient lookup by user, platform, and native ID, including created_at for sorting
     __table_args__ = (
@@ -112,3 +130,70 @@ class MeetingSession(Base):
     meeting = relationship("Meeting", back_populates="sessions") # Define relationship
 
     __table_args__ = (UniqueConstraint('meeting_id', 'session_uid', name='_meeting_session_uc'),) # Ensure unique session per meeting
+
+
+class MeetingMetadata(Base):
+    __tablename__ = "meeting_metadata"
+
+    id = Column(Integer, primary_key=True)
+    meeting_id = Column(Integer, ForeignKey("meetings.id", ondelete="CASCADE"), nullable=False, unique=True)
+    llm_version = Column(String(100), nullable=False)
+    goal = Column(Text, nullable=True)
+    summary = Column(Text, nullable=True)
+    sentiment = Column(String(32), nullable=True)
+    blockers = Column(JSONB, nullable=False, server_default=text("'[]'::jsonb"))
+    deadlines = Column(JSONB, nullable=False, server_default=text("'[]'::jsonb"))
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    meeting = relationship("Meeting", back_populates="metadata_record")
+
+
+class SpeakerHighlight(Base):
+    __tablename__ = "speaker_highlights"
+
+    id = Column(Integer, primary_key=True)
+    meeting_id = Column(Integer, ForeignKey("meetings.id", ondelete="CASCADE"), nullable=False, index=True)
+    speaker = Column(String(255), nullable=True)
+    start_time = Column(Float, nullable=False)
+    end_time = Column(Float, nullable=False)
+    absolute_start_time = Column(sqlalchemy.DateTime(timezone=True), nullable=True)
+    absolute_end_time = Column(sqlalchemy.DateTime(timezone=True), nullable=True)
+    text = Column(Text, nullable=False)
+    label = Column(String(100), nullable=True)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+    meeting = relationship("Meeting", back_populates="speaker_highlights")
+
+
+class ActionItem(Base):
+    __tablename__ = "action_items"
+
+    id = Column(Integer, primary_key=True)
+    meeting_id = Column(Integer, ForeignKey("meetings.id", ondelete="CASCADE"), nullable=False, index=True)
+    owner = Column(String(255), nullable=True)
+    description = Column(Text, nullable=False)
+    due_date = Column(sqlalchemy.DateTime(timezone=True), nullable=True)
+    status = Column(String(50), nullable=True)
+    priority = Column(String(50), nullable=True)
+    reference_url = Column(Text, nullable=True)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    meeting = relationship("Meeting", back_populates="action_items")
+
+
+class TranscriptEmbedding(Base):
+    __tablename__ = "transcript_embeddings"
+
+    id = Column(Integer, primary_key=True)
+    meeting_id = Column(Integer, ForeignKey("meetings.id", ondelete="CASCADE"), nullable=False, index=True)
+    segment_start = Column(Float, nullable=True)
+    segment_end = Column(Float, nullable=True)
+    speaker = Column(String(255), nullable=True)
+    text = Column(Text, nullable=False)
+    timestamp = Column(sqlalchemy.DateTime(timezone=True), nullable=True)
+    embedding = Column(Vector(1536), nullable=False)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+    meeting = relationship("Meeting", back_populates="transcript_embeddings")

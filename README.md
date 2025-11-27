@@ -57,6 +57,7 @@ hackathon/
    - Admin API docs: `http://localhost:18057/docs`
    - Transcription Collector: `http://localhost:18123/health`
    - Postgres: `localhost:15438`
+   - Meeting Insights UI: `http://localhost:18501` (Streamlit dashboard backed by the new post-processing worker)
 
 4. **Provision a user + API token**
    Use `docs/self-hosted-management.md` (copied from the root project) or run:
@@ -92,6 +93,7 @@ hackathon/
 
 - Update `docker-compose.yml` to switch `whisperlive` to GPU mode or add extra services (e.g., your AI Scrum Master microservice).
 - Tune the transcription backend: `WHISPER_BACKEND=openai` (default) streams PCM to ChatGPT-4o Transcribe via `OPENAI_API_KEY`; set it to `faster_whisper` to fall back to the bundled local model and ignore the OpenAI knobs.
+- Leverage the new meeting-insights worker (`meeting-insights-worker`) and Streamlit UI (`meeting-insights-ui`) by adjusting `OPENAI_SUMMARY_MODEL`, `OPENAI_EMBEDDING_MODEL`, and `INSIGHTS_*` env variables—the worker pushes structured data + embeddings into Postgres, and the UI reads directly from those tables.
 - Extend `Makefile` with helper targets (database migrations, log tailing, etc.).
 - Keep parity with the upstream hackathon_bot sources by periodically syncing `services/*` and `libs/shared-models` from the root repo.
 - Build your hackathon-specific code (e.g., standup summarizer) alongside this directory to keep a clean separation from the upstream project.
