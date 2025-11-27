@@ -222,6 +222,40 @@ services:
         condition: service_started
     restart: unless-stopped
 
+  jira-integration:
+    build:
+      context: .
+      dockerfile: services/jira-integration/Dockerfile
+    ports:
+      - "${JIRA_SERVICE_HOST_PORT:-18003}:8003"
+    environment:
+      - JIRA_URL=${JIRA_URL}
+      - JIRA_EMAIL=${JIRA_EMAIL}
+      - JIRA_API_TOKEN=${JIRA_API_TOKEN}
+      - JIRA_PROJECT_KEY=${JIRA_PROJECT_KEY:-PROJ}
+      - JIRA_ISSUE_TYPE=${JIRA_ISSUE_TYPE:-Task}
+      - JIRA_SUBTASK_ISSUE_TYPE=${JIRA_SUBTASK_ISSUE_TYPE:-Sub-task}
+      - JIRA_EPIC_ISSUE_TYPE=${JIRA_EPIC_ISSUE_TYPE:-Epic}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENAI_JIRA_MODEL=${OPENAI_JIRA_MODEL:-gpt-5-nano}
+      - JIRA_SERVICE_PORT=8003
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    restart: unless-stopped
+
+  jira-task-ui:
+    build:
+      context: .
+      dockerfile: services/jira-task-ui/Dockerfile
+    ports:
+      - "${JIRA_UI_HOST_PORT:-18004}:8502"
+    environment:
+      - JIRA_SERVICE_URL=http://jira-integration:8003
+      - JIRA_SERVICE_URL_EXTERNAL=${JIRA_SERVICE_URL_EXTERNAL:-http://localhost:18003}
+    depends_on:
+      jira-integration:
+        condition: service_started
+    restart: unless-stopped
+
   redis:
     image: redis:7.0-alpine
     command:
