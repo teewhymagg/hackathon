@@ -112,7 +112,7 @@ dmypy.json
 
 
 .pyre/
-
+docs/
 
 .DS_Store
 # IDE specific files
