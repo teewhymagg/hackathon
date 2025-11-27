@@ -84,16 +84,10 @@ You can keep the provided ports unless they clash locally.
    > **Service helpers:**
    >
    > - `make build-services` rebuilds `whisperlive`, `meeting-insights-worker`, and `meeting-insights-ui`.
-   > - `make up-whisperlive` launches just the WhisperLive container (CPU profile).
-   > - `make up-insights` starts the meeting insights worker + Streamlit dashboard.
+   > - `make up-whisperlive` launches just the WhisperLive container (if you need to start it separately).
+   > - `make up-insights` starts the meeting insights worker + Streamlit dashboard (if you need to start them separately).
 
-3. **Ensure WhisperLive is running**. If you left the `profiles: ["cpu"]` line in `docker-compose.yml`, launch it with the profile:
-
-   ```bash
-   docker compose -f docker-compose.yml --env-file .env --profile cpu up -d whisperlive
-   ```
-
-   To always start it with `make up`, remove the `profiles` stanza so it participates in the default project.
+3. **All services start automatically**. `make up` now starts all services including WhisperLive, meeting-insights-worker, and meeting-insights-ui.
 
 4. **Verify**:
    ```bash

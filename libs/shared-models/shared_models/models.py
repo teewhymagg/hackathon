@@ -10,7 +10,7 @@ from sqlalchemy import (
     Index,
     UniqueConstraint,
 )
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import JSONB, ARRAY
 from sqlalchemy.sql import func, text
 from sqlalchemy.orm import declarative_base, relationship
 from sqlalchemy.ext.mutable import MutableDict
@@ -195,5 +195,13 @@ class TranscriptEmbedding(Base):
     timestamp = Column(sqlalchemy.DateTime(timezone=True), nullable=True)
     embedding = Column(Vector(1536), nullable=False)
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    # RAG-specific columns
+    chunk_type = Column(String(50), nullable=True, server_default='transcript', index=True)  # transcript, insight, action_item
+    meeting_native_id = Column(String(255), nullable=True, index=True)
+    platform = Column(String(100), nullable=True, index=True)
+    language = Column(String(10), nullable=True, index=True)
+    topics = Column(ARRAY(String), nullable=True)
+    chunk_hash = Column(String(64), nullable=True, index=True)
+    meeting_date = Column(sqlalchemy.Date, nullable=True, index=True)
 
     meeting = relationship("Meeting", back_populates="transcript_embeddings")

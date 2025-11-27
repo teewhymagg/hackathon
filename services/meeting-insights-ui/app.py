@@ -3,7 +3,6 @@ from datetime import datetime
 from typing import List, Optional
 
 import streamlit as st
-from openai import OpenAI
 from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
 
@@ -13,21 +12,13 @@ from shared_models.models import (
     Meeting,
     MeetingMetadata,
     SpeakerHighlight,
-    TranscriptEmbedding,
 )
 
 
 SessionLocal = sessionmaker(bind=sync_engine)
 
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
-if not OPENAI_API_KEY:
-    raise RuntimeError("OPENAI_API_KEY must be set for the insights UI")
-
-EMBEDDING_MODEL = os.environ.get("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
-openai_client = OpenAI(api_key=OPENAI_API_KEY)
-
-st.set_page_config(page_title="Meeting Insights", layout="wide")
-st.title("AI Scrum Master • Meeting Insights")
+st.set_page_config(page_title="Инсайты", layout="wide")
+st.title("📊 AI Scrum Master • Инсайты")
 
 
 def fetch_meetings():
@@ -74,21 +65,6 @@ def get_meeting_details(meeting_id: int):
         return meeting, metadata, action_items, highlights
 
 
-def search_transcript(meeting_id: int, query: str):
-    embedding = (
-        openai_client.embeddings.create(model=EMBEDDING_MODEL, input=[query]).data[0].embedding
-    )
-    with SessionLocal() as session:
-        stmt = (
-            select(TranscriptEmbedding)
-            .where(TranscriptEmbedding.meeting_id == meeting_id)
-            .order_by(TranscriptEmbedding.embedding.cosine_distance(embedding))
-            .limit(5)
-        )
-        results = session.execute(stmt).scalars().all()
-        return results
-
-
 def format_datetime(value: Optional[datetime]) -> str:
     return value.isoformat(sep=" ", timespec="minutes") if value else "—"
 
@@ -96,11 +72,11 @@ def format_datetime(value: Optional[datetime]) -> str:
 meetings = fetch_meetings()
 
 if not meetings:
-    st.info("No processed meetings yet. Ensure the worker has generated insights.")
+    st.info("Нет обработанных встреч. Убедитесь, что worker сгенерировал инсайты.")
     st.stop()
 
 meeting_labels = [entry["label"] for entry in meetings]
-selected_label = st.sidebar.selectbox("Select meeting", meeting_labels, index=0)
+selected_label = st.sidebar.selectbox("Выберите встречу", meeting_labels, index=0)
 
 selected_entry = next(entry for entry in meetings if entry["label"] == selected_label)
 selected_meeting_id = selected_entry["id"]
@@ -114,20 +90,20 @@ task_breakdown = insights_blob.get("task_breakdown", []) if isinstance(insights_
 team_snapshot = (meeting.data or {}).get("team_roster_snapshot") if meeting else None
 
 col1, col2, col3 = st.columns(3)
-col1.metric("Meeting ID", meeting.platform_specific_id or meeting.id)
-col2.metric("Status", meeting.status)
+col1.metric("ID встречи", meeting.platform_specific_id or meeting.id)
+col2.metric("Статус", meeting.status)
 col3.metric(
-    "Processed",
+    "Обработано",
     format_datetime(meeting.processed_at),
 )
 
-st.subheader("Overview")
+st.subheader("Обзор")
 if metadata:
-    st.write(f"**Goal:** {metadata.goal or 'n/a'}")
-    st.write(f"**Summary:** {metadata.summary or 'n/a'}")
-    st.write(f"**Sentiment:** {metadata.sentiment or 'unknown'}")
+    st.write(f"**Цель:** {metadata.goal or 'н/д'}")
+    st.write(f"**Резюме:** {metadata.summary or 'н/д'}")
+    st.write(f"**Настроение:** {metadata.sentiment or 'неизвестно'}")
 else:
-    st.warning("Insights not available for this meeting yet.")
+    st.warning("Инсайты для этой встречи пока недоступны.")
 
 if insights_blob:
     metric_col1, metric_col2, metric_col3 = st.columns(3)
@@ -204,40 +180,23 @@ if team_snapshot:
     st.subheader("Состав команды (snapshot из TXT)")
     st.code(team_snapshot, language="markdown")
 
-st.subheader("Action Items")
+st.subheader("Задачи")
 if action_items:
     for item in action_items:
         cols = st.columns([3, 2, 2, 1])
         cols[0].write(f"- {item.description}")
-        cols[1].write(f"Owner: {item.owner or 'n/a'}")
-        cols[2].write(f"Due: {format_datetime(item.due_date)}")
-        cols[3].write(item.status or "pending")
+        cols[1].write(f"Ответственный: {item.owner or 'н/д'}")
+        cols[2].write(f"Срок: {format_datetime(item.due_date)}")
+        cols[3].write(item.status or "ожидает")
 else:
-    st.write("No action items detected.")
+    st.write("Задачи не обнаружены.")
 
-st.subheader("Speaker Highlights")
+st.subheader("Ключевые моменты спикеров")
 if highlights:
     for highlight in highlights:
         st.write(
-            f"*{highlight.speaker or 'Unknown'}* "
+            f"*{highlight.speaker or 'Неизвестно'}* "
             f"({highlight.start_time:.1f}-{highlight.end_time:.1f}s): {highlight.text}"
         )
 else:
-    st.write("No speaker highlights extracted.")
-
-st.subheader("Ask the Meeting")
-query = st.text_input("Search the transcript or ask a question")
-if query:
-    try:
-        matches = search_transcript(selected_meeting_id, query)
-        if not matches:
-            st.info("No matching transcript segments.")
-        else:
-            for match in matches:
-                ts = format_datetime(match.timestamp)
-                st.markdown(
-                    f"**{match.speaker or 'Unknown'}** @ {ts}\n\n> {match.text}"
-                )
-    except Exception as exc:
-        st.error(f"Search failed: {exc}")
-
+    st.write("Ключевые моменты не извлечены.")

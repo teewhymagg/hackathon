@@ -75,7 +75,6 @@ services:
     build:
       context: .
       dockerfile: services/WhisperLive/Dockerfile.cpu
-    profiles: ["cpu"]
     environment:
       - REDIS_STREAM_URL=redis://redis:6379/0/transcription_segments
       - TRANSCRIPTION_COLLECTOR_URL=redis://redis:6379/0/transcription_segments
@@ -166,6 +165,8 @@ services:
       dockerfile: services/meeting-insights-worker/Dockerfile
     volumes:
       - ./team_roster.txt:/app/team_roster.txt:ro
+    ports:
+      - "${RAG_API_HOST_PORT:-18002}:8002"
     environment:
       - DB_HOST=postgres
       - DB_PORT=5432
@@ -180,6 +181,11 @@ services:
       - INSIGHTS_TARGET_STATUSES=${INSIGHTS_TARGET_STATUSES:-completed,failed}
       - TEAM_ROSTER_PATH=${TEAM_ROSTER_PATH:-/app/team_roster.txt}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - RAG_LLM_MODEL=${RAG_LLM_MODEL:-gpt-5-nano}
+      - RAG_TOP_K=${RAG_TOP_K:-8}
+      - ASK_MEETING_TOP_K=${ASK_MEETING_TOP_K:-6}
+      - RAG_MAX_HISTORY=${RAG_MAX_HISTORY:-10}
+      - RAG_API_PORT=8002
     depends_on:
       postgres:
         condition: service_healthy
@@ -203,6 +209,8 @@ services:
       - OPENAI_EMBEDDING_MODEL=${OPENAI_EMBEDDING_MODEL:-text-embedding-3-small}
       - TEAM_ROSTER_PATH=${TEAM_ROSTER_PATH:-/app/team_roster.txt}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - RAG_API_URL=${RAG_API_URL:-http://meeting-insights-worker:8002}
+      - ENABLE_RAG_CHAT=${ENABLE_RAG_CHAT:-true}
     ports:
       - "${MEETING_UI_HOST_PORT:-18501}:8501"
     depends_on:
@@ -210,6 +218,8 @@ services:
         condition: service_healthy
       db-migrate:
         condition: service_completed_successfully
+      meeting-insights-worker:
+        condition: service_started
     restart: unless-stopped
 
   redis:
