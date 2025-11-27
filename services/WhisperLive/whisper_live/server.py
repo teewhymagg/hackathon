@@ -2905,16 +2905,28 @@ class ServeClientOpenAI(ServeClientBase):
 
                 segments = []
                 if text:
-                    segment = self.format_segment(
-                        self.timestamp_offset,
-                        self.timestamp_offset + chunk_duration,
-                        text,
-                        completed=True,
-                        language=self.language,
-                    )
-                    segments = [segment]
-                    self.transcript.extend(segments)
-
+                    # Apply hallucination filter before creating segment
+                    filtered_text = self._filter_hallucinations(text)
+                    if filtered_text is None:
+                        # Log and skip this segment if it's a hallucination
+                        try:
+                            if WL_LOG_HALLUCINATIONS:
+                                logger.info(f'HALLUCINATION_FILTERED: "{text}"')
+                        except Exception:
+                            pass
+                        # Skip creating segment - timestamp will be updated below
+                    else:
+                        segment = self.format_segment(
+                            self.timestamp_offset,
+                            self.timestamp_offset + chunk_duration,
+                            filtered_text,
+                            completed=True,
+                            language=self.language,
+                        )
+                        segments = [segment]
+                        self.transcript.extend(segments)
+                
+                # Always update timestamp offset after processing (whether text was filtered or not)
                 self.timestamp_offset += chunk_duration
 
                 if segments:
@@ -2969,6 +2981,9 @@ class ServeClientOpenAI(ServeClientBase):
             language = getattr(response, "language", None)
             if text:
                 text = text.strip()
+                # Log OpenAI responses for debugging hallucinations
+                if WL_LOG_HALLUCINATIONS:
+                    logging.info(f"[OPENAI] Raw transcription: '{text}' (language: {language})")
             return text, language
         finally:
             if tmp_path and os.path.exists(tmp_path):
