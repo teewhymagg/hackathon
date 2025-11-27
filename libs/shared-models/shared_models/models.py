@@ -1,8 +1,19 @@
 import sqlalchemy
-from sqlalchemy import (Column, String, Text, Integer, DateTime, Float, ForeignKey, Index, UniqueConstraint)
+from sqlalchemy import (
+    Column,
+    String,
+    Text,
+    Integer,
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
+    UniqueConstraint,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.sql import func, text
 from sqlalchemy.orm import declarative_base, relationship
+from sqlalchemy.ext.mutable import MutableDict
 from datetime import datetime # Needed for Transcription model default
 from shared_models.schemas import Platform # Import Platform for the static method
 from typing import Optional # Added for the return type hint in constructed_meeting_url
@@ -44,7 +55,7 @@ class Meeting(Base):
     bot_container_id = Column(String(255), nullable=True)
     start_time = Column(DateTime, nullable=True)
     end_time = Column(DateTime, nullable=True)
-    data = Column(JSONB, nullable=False, default=text("'{}'::jsonb"))
+    data = Column(MutableDict.as_mutable(JSONB), nullable=False, default=lambda: {})
     created_at = Column(DateTime, server_default=func.now(), index=True)
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
     processed_at = Column(DateTime, nullable=True)
