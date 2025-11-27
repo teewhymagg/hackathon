@@ -26,3 +26,15 @@ logs:
 .PHONY: ps
 ps:
 	$(COMPOSE) --env-file $(ENV_FILE) ps
+
+.PHONY: build-services
+build-services:
+	$(COMPOSE) --env-file $(ENV_FILE) build whisperlive meeting-insights-worker meeting-insights-ui
+
+.PHONY: up-whisperlive
+up-whisperlive:
+	$(COMPOSE) --env-file $(ENV_FILE) --profile cpu up -d whisperlive
+
+.PHONY: up-insights
+up-insights:
+	$(COMPOSE) --env-file $(ENV_FILE) up -d meeting-insights-worker meeting-insights-ui

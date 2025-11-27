@@ -38,6 +38,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      db-migrate:
+        condition: service_completed_successfully
     restart: unless-stopped
 
   bot-manager:
@@ -65,6 +67,8 @@ services:
         condition: service_started
       postgres:
         condition: service_healthy
+      db-migrate:
+        condition: service_completed_successfully
     restart: unless-stopped
 
   whisperlive:
@@ -133,6 +137,79 @@ services:
         condition: service_started
       postgres:
         condition: service_healthy
+      db-migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  db-migrate:
+    build:
+      context: .
+      dockerfile: services/transcription-collector/Dockerfile
+    command: alembic upgrade head
+    volumes:
+      - ./alembic.ini:/app/alembic.ini
+      - ./libs/shared-models/alembic:/app/alembic
+    environment:
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=hackathon_bot
+      - DB_USER=postgres
+      - DB_PASSWORD=postgres
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  meeting-insights-worker:
+    build:
+      context: .
+      dockerfile: services/meeting-insights-worker/Dockerfile
+    volumes:
+      - ./team_roster.txt:/app/team_roster.txt:ro
+    environment:
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=hackathon_bot
+      - DB_USER=postgres
+      - DB_PASSWORD=postgres
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENAI_SUMMARY_MODEL=${OPENAI_SUMMARY_MODEL:-gpt-5-nano}
+      - OPENAI_EMBEDDING_MODEL=${OPENAI_EMBEDDING_MODEL:-text-embedding-3-small}
+      - INSIGHTS_POLL_INTERVAL=${INSIGHTS_POLL_INTERVAL:-30}
+      - INSIGHTS_BATCH_SIZE=${INSIGHTS_BATCH_SIZE:-1}
+      - INSIGHTS_TARGET_STATUSES=${INSIGHTS_TARGET_STATUSES:-completed,failed}
+      - TEAM_ROSTER_PATH=${TEAM_ROSTER_PATH:-/app/team_roster.txt}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      db-migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  meeting-insights-ui:
+    build:
+      context: .
+      dockerfile: services/meeting-insights-ui/Dockerfile
+    volumes:
+      - ./team_roster.txt:/app/team_roster.txt:ro
+    environment:
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=hackathon_bot
+      - DB_USER=postgres
+      - DB_PASSWORD=postgres
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENAI_EMBEDDING_MODEL=${OPENAI_EMBEDDING_MODEL:-text-embedding-3-small}
+      - TEAM_ROSTER_PATH=${TEAM_ROSTER_PATH:-/app/team_roster.txt}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    ports:
+      - "${MEETING_UI_HOST_PORT:-18501}:8501"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      db-migrate:
+        condition: service_completed_successfully
     restart: unless-stopped
 
   redis:
@@ -144,7 +221,7 @@ services:
     restart: unless-stopped
 
   postgres:
-    image: postgres:15-alpine
+    image: pgvector/pgvector:pg16
     environment:
       - POSTGRES_DB=hackathon_bot
       - POSTGRES_USER=postgres
