@@ -49,7 +49,7 @@ export async function startGoogleRecording(page: Page, botConfig: BotConfig): Pr
       llmAnalyzer = new LLMAnalyzer({
         apiKey: openaiApiKey,
         model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
-        analysisIntervalSeconds: parseInt(process.env.ANALYSIS_INTERVAL_SECONDS || '30'),
+        analysisIntervalSeconds: parseInt(process.env.ANALYSIS_INTERVAL_SECONDS || '10'),
       });
       const dedupWindow = parseInt(process.env.MESSAGE_DEDUP_WINDOW_SECONDS || '300');
       messageDeduplicator = new MessageDeduplicator(dedupWindow);

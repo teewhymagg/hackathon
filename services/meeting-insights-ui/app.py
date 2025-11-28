@@ -87,6 +87,7 @@ responsible_people = insights_blob.get("responsible_people", []) if isinstance(i
 critical_deadlines = insights_blob.get("critical_deadlines", []) if isinstance(insights_blob, dict) else []
 blockers = insights_blob.get("blockers", []) if isinstance(insights_blob, dict) else []
 task_breakdown = insights_blob.get("task_breakdown", []) if isinstance(insights_blob, dict) else []
+llm_suggestions = insights_blob.get("llm_suggestions", {}) if isinstance(insights_blob, dict) else {}
 team_snapshot = (meeting.data or {}).get("team_roster_snapshot") if meeting else None
 
 col1, col2, col3 = st.columns(3)
@@ -175,6 +176,49 @@ if insights_blob:
                         st.caption(f"Передача: {sub['handoff_notes']}")
     else:
         st.info("Нет декомпозиции задач.")
+
+    st.subheader("🤖 Предложения ИИ")
+    if llm_suggestions:
+        task_assignments = llm_suggestions.get("task_assignments", [])
+        subtask_breakdowns = llm_suggestions.get("subtask_breakdowns", [])
+        
+        if task_assignments:
+            st.markdown("**Назначения задач:**")
+            for assignment in task_assignments:
+                with st.expander(f"📋 {assignment.get('task_description', 'Задача')}"):
+                    st.write(f"**Предложенный ответственный:** {assignment.get('suggested_owner', '—')}")
+                    st.write(f"**Уверенность:** {assignment.get('confidence', '—')}")
+                    if assignment.get('reasoning'):
+                        st.caption(f"💡 {assignment['reasoning']}")
+        else:
+            st.info("Нет предложений по назначению задач.")
+        
+        if subtask_breakdowns:
+            st.markdown("**Декомпозиция задач:**")
+            for breakdown in subtask_breakdowns:
+                with st.expander(f"🔨 {breakdown.get('parent_task', 'Задача')}"):
+                    if breakdown.get('reasoning'):
+                        st.caption(f"💡 {breakdown['reasoning']}")
+                    subtasks = breakdown.get("suggested_subtasks", [])
+                    if subtasks:
+                        st.markdown("**Предлагаемые подзадачи:**")
+                        for i, subtask in enumerate(subtasks, 1):
+                            st.markdown(
+                                f"{i}. **{subtask.get('title', 'Подзадача')}**\n"
+                                f"   - Ответственный: {subtask.get('suggested_owner', '—')}\n"
+                                f"   - Оценка усилий: {subtask.get('estimated_effort', '—')}"
+                            )
+                            if subtask.get('dependencies'):
+                                st.caption(f"   - Зависимости: {subtask['dependencies']}")
+                            if subtask.get('reasoning'):
+                                st.caption(f"   - Обоснование: {subtask['reasoning']}")
+        else:
+            st.info("Нет предложений по декомпозиции задач.")
+        
+        if not task_assignments and not subtask_breakdowns:
+            st.info("Нет предложений от ИИ.")
+    else:
+        st.info("Предложения ИИ недоступны.")
 
 if team_snapshot:
     st.subheader("Состав команды (snapshot из TXT)")

@@ -132,7 +132,7 @@ curl -X POST http://localhost:18056/bots \
   -H "X-API-Key: $USER_TOKEN" \
   -d '{
         "platform": "google_meet",
-        "native_meeting_id": "umc-qzfp-etj",
+        "native_meeting_id": "fau-bvsd-owz",
         "display_name": "Scrum Recorder"
       }'
 ```
@@ -159,7 +159,7 @@ When the bot joins successfully you will see `status: active` in the `/bots/{id}
 
 ```bash
 curl -H "X-API-Key: $USER_TOKEN" \
-     http://localhost:18056/transcripts/google_meet/fkp-oyeb-phw
+     http://localhost:18056/transcripts/google_meet/pnz-iyod-ftf
 ```
 
 Response contains meeting metadata plus the ordered `segments` array (`start`, `end`, `text`, `language`, timestamps).

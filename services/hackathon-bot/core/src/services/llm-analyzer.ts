@@ -37,7 +37,7 @@ export class LLMAnalyzer {
     this.config = {
       apiKey: config.apiKey,
       model: config.model || 'gpt-4o-mini',
-      analysisIntervalSeconds: config.analysisIntervalSeconds || 30,
+      analysisIntervalSeconds: config.analysisIntervalSeconds || 10,
     };
   }
 
@@ -72,8 +72,15 @@ export class LLMAnalyzer {
       }
 
       const content = response.choices[0].message?.content;
+      const finishReason = response.choices[0].finish_reason;
+      
       if (!content) {
-        log(`[LLM Analyzer] Empty content in OpenAI response. Full response: ${JSON.stringify(response, null, 2)}`);
+        if (finishReason === 'length') {
+          log(`[LLM Analyzer] ERROR: Model hit token limit (finish_reason: length). Consider using a non-reasoning model (gpt-4o-mini) or increasing max_completion_tokens.`);
+          log(`[LLM Analyzer] Current model: ${this.config.model}, completion_tokens: ${response.usage?.completion_tokens}, reasoning_tokens: ${response.usage?.completion_tokens_details?.reasoning_tokens || 'N/A'}`);
+        } else {
+          log(`[LLM Analyzer] Empty content in OpenAI response. Finish reason: ${finishReason}. Full response: ${JSON.stringify(response, null, 2)}`);
+        }
         return { issues: [], hasIssues: false };
       }
       
@@ -178,8 +185,9 @@ Important:
     // Reasoning models (gpt-5-nano, o1) need significantly more tokens because they use reasoning tokens
     // They typically use ~500-1000 tokens for reasoning, then need tokens for the actual output
     if (isNewModel) {
-      // Increase limit for reasoning models to allow both reasoning and output
-      requestBody.max_completion_tokens = 2000;
+      // Reasoning models need much more tokens: reasoning tokens + output tokens
+      // Increased to 8000 to allow extensive reasoning (~4000-5000 tokens) and sufficient output tokens (~3000-4000)
+      requestBody.max_completion_tokens = 8000;
     } else {
       requestBody.max_tokens = 500;
     }

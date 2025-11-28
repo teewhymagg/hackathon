@@ -4,6 +4,7 @@ import os
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
+import httpx
 
 from openai import OpenAI
 from sqlalchemy import select
@@ -189,7 +190,32 @@ def build_insights_prompt(
         {"text": "Ключевой тезис", "start": 0, "end": 0, "label": "обновление|решение|блокер|другое"}
       ]
     }
-  ]
+  ],
+  "llm_suggestions": {
+    "task_assignments": [
+      {
+        "task_description": "Описание задачи без ответственного",
+        "suggested_owner": "Имя из команды",
+        "reasoning": "Обоснование назначения на основе роли и зоны ответственности",
+        "confidence": "высокая|средняя|низкая"
+      }
+    ],
+    "subtask_breakdowns": [
+      {
+        "parent_task": "Название большой задачи",
+        "suggested_subtasks": [
+          {
+            "title": "Название подзадачи",
+            "suggested_owner": "Имя из команды",
+            "estimated_effort": "низкая|средняя|высокая",
+            "dependencies": "Что нужно для старта",
+            "reasoning": "Почему эта декомпозиция поможет"
+          }
+        ],
+        "reasoning": "Почему эта задача нуждается в декомпозиции"
+      }
+    ]
+  }
 }
 """
 
@@ -208,12 +234,19 @@ def build_insights_prompt(
 Фрагменты транскрипта (до {SEGMENT_LIMIT} записей):
 {transcript_payload}
 
-ВАЖНО: Некоторые фразы в транскрипте могут быть галлюцинациями (ошибками распознавания речи). 
+ВАЖНО: 
+1. Некоторые фразы в транскрипте могут быть галлюцинациями (ошибками распознавания речи). 
 При анализе:
 - Игнорируй фразы, которые не относятся к деловой тематике встречи
 - Исключай бессмысленные или нелогичные фрагменты
 - Не используй случайные слова или технические артефакты распознавания
 - Фокусируйся только на релевантном контенте, который логично связан с обсуждаемой темой
+
+2. В поле "llm_suggestions.task_assignments" добавь предложения по назначению ответственных для задач, которые упомянуты в транскрипте БЕЗ указания ответственного. Используй состав команды из roster_section для определения подходящего человека на основе роли и зоны ответственности.
+
+3. В поле "llm_suggestions.subtask_breakdowns" добавь декомпозицию больших или сложных задач на подзадачи. Определи задачи, которые слишком большие или неопределенные, и разбей их на конкретные подзадачи с назначением ответственных.
+
+4. Если в транскрипте все задачи уже имеют ответственных и все задачи достаточно конкретны, оставь массивы пустыми, но поле "llm_suggestions" должно присутствовать.
 
 Сформируй JSON ровно по схеме выше без пояснений снаружи, используя только релевантный контекст из транскрипта.
 """
@@ -538,6 +571,42 @@ def process_meeting(session: Session, meeting: Meeting) -> None:
     meeting.processed_at = datetime.utcnow()
     session.commit()
     logger.info("Meeting %s processed successfully", meeting.id)
+    
+    # Trigger email notification for this meeting
+    try:
+        email_notifier_url = os.environ.get("EMAIL_NOTIFIER_URL", "http://email-notifier:8003")
+        trigger_url = f"{email_notifier_url}/trigger"
+        
+        response = httpx.post(
+            trigger_url,
+            json={"meeting_id": meeting.id},
+            timeout=5.0
+        )
+        if response.status_code == 200:
+            logger.info("Email notification triggered for meeting %s", meeting.id)
+        else:
+            logger.warning("Failed to trigger email notification for meeting %s: %s", meeting.id, response.text)
+    except Exception as e:
+        # Don't fail meeting processing if email trigger fails
+        logger.warning("Error triggering email notification for meeting %s: %s", meeting.id, e)
+    
+    # Trigger Jira sync for this meeting
+    try:
+        jira_sync_url = os.environ.get("JIRA_SYNC_URL", "http://jira-sync-worker:8004")
+        trigger_url = f"{jira_sync_url}/trigger"
+        
+        response = httpx.post(
+            trigger_url,
+            json={"meeting_id": meeting.id},
+            timeout=5.0
+        )
+        if response.status_code == 200:
+            logger.info("Jira sync triggered for meeting %s", meeting.id)
+        else:
+            logger.warning("Failed to trigger Jira sync for meeting %s: %s", meeting.id, response.text)
+    except Exception as e:
+        # Don't fail meeting processing if Jira sync trigger fails
+        logger.warning("Error triggering Jira sync for meeting %s: %s", meeting.id, e)
 
 
 def process_batch() -> bool:
