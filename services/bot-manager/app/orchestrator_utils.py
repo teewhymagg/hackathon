@@ -177,7 +177,7 @@ async def start_bot_container(
 
     container_name = f"hackathon_bot-{meeting_id}-{uuid.uuid4().hex[:8]}"
     if not bot_name:
-        bot_name = f"VexaBot-{uuid.uuid4().hex[:6]}"
+        bot_name = f"TranscriptionBot-{uuid.uuid4().hex[:6]}"
     connection_id = str(uuid.uuid4())
     logger.info(f"Generated unique connectionId for bot session: {connection_id}")
 
@@ -238,6 +238,20 @@ async def start_bot_container(
         f"WHISPER_LIVE_URL={whisper_live_url_for_bot}", # Use the URL from bot-manager's env
         f"LOG_LEVEL={os.getenv('LOG_LEVEL', 'INFO').upper()}",
     ]
+    
+    # Pass Active Meeting Assistant environment variables if set
+    if os.getenv('ENABLE_MEETING_ASSISTANT'):
+        environment.append(f"ENABLE_MEETING_ASSISTANT={os.getenv('ENABLE_MEETING_ASSISTANT')}")
+    if os.getenv('OPENAI_API_KEY'):
+        environment.append(f"OPENAI_API_KEY={os.getenv('OPENAI_API_KEY')}")
+    if os.getenv('OPENAI_MODEL'):
+        environment.append(f"OPENAI_MODEL={os.getenv('OPENAI_MODEL')}")
+    if os.getenv('ANALYSIS_INTERVAL_SECONDS'):
+        environment.append(f"ANALYSIS_INTERVAL_SECONDS={os.getenv('ANALYSIS_INTERVAL_SECONDS')}")
+    if os.getenv('MESSAGE_DEDUP_WINDOW_SECONDS'):
+        environment.append(f"MESSAGE_DEDUP_WINDOW_SECONDS={os.getenv('MESSAGE_DEDUP_WINDOW_SECONDS')}")
+    if os.getenv('MAX_MESSAGES_PER_MINUTE'):
+        environment.append(f"MAX_MESSAGES_PER_MINUTE={os.getenv('MAX_MESSAGES_PER_MINUTE')}")
 
     # Ensure absolute path for URL encoding here as well
     socket_path_relative = DOCKER_HOST.split('//', 1)[1]

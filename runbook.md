@@ -43,11 +43,15 @@ make init          # copies env-example.cpu -> .env (first run only)
 
 Open `.env` and set at least:
 
-| Variable                        | Purpose                                                                  |
-| ------------------------------- | ------------------------------------------------------------------------ |
-| `ADMIN_API_TOKEN`               | Shared secret used by Admin API + bot-manager signing                    |
-| `BOT_IMAGE_NAME` (optional)     | Defaults to `hackathon_bot:hackathon`; override if you publish elsewhere |
-| `WHISPER_MODEL_SIZE` (optional) | `tiny`, `base`, `small`, … depending on CPU budget                       |
+| Variable                        | Purpose                                                                                        |
+| ------------------------------- | ---------------------------------------------------------------------------------------------- |
+| `ADMIN_API_TOKEN`               | Shared secret used by Admin API + bot-manager signing                                          |
+| `OPENAI_API_KEY`                | Required for the default ChatGPT-4o transcription backend (`WHISPER_BACKEND=openai`)           |
+| `WHISPER_BACKEND`               | Choose `openai` (default) or `faster_whisper` if you need the bundled local model              |
+| `OPENAI_TRANSCRIBE_*`           | Optional knobs for chunk length, retries, prompts when using OpenAI                            |
+| `TEAM_ROSTER_PATH` (optional)   | Path (inside containers) to a txt file with командные роли; defaults to `/app/team_roster.txt` |
+| `BOT_IMAGE_NAME` (optional)     | Defaults to `hackathon_bot:hackathon`; override if you publish elsewhere                       |
+| `WHISPER_MODEL_SIZE` (optional) | `tiny`, `base`, `small`, … depending on CPU budget                                             |
 
 You can keep the provided ports unless they clash locally.
 
@@ -73,14 +77,17 @@ You can keep the provided ports unless they clash locally.
    - Admin API (FastAPI docs): `http://localhost:18057/docs`
    - Transcription Collector health: `http://localhost:18123/health`
    - Postgres: `localhost:15438`
+   - `whisperlive` now defaults to the OpenAI backend—double-check `OPENAI_API_KEY` is set before calling `make up`, otherwise requests will fail with 401s from the transcription bridge.
+   - Meeting Insights UI: `http://localhost:18501`
+   - A one-shot `db-migrate` service now runs automatically to apply Alembic migrations before any DB client starts, so fresh volumes “just work.”
 
-3. **Ensure WhisperLive is running**. If you left the `profiles: ["cpu"]` line in `docker-compose.yml`, launch it with the profile:
+   > **Service helpers:**
+   >
+   > - `make build-services` rebuilds `whisperlive`, `meeting-insights-worker`, and `meeting-insights-ui`.
+   > - `make up-whisperlive` launches just the WhisperLive container (if you need to start it separately).
+   > - `make up-insights` starts the meeting insights worker + Streamlit dashboard (if you need to start them separately).
 
-   ```bash
-   docker compose -f docker-compose.yml --env-file .env --profile cpu up -d whisperlive
-   ```
-
-   To always start it with `make up`, remove the `profiles` stanza so it participates in the default project.
+3. **All services start automatically**. `make up` now starts all services including WhisperLive, meeting-insights-worker, and meeting-insights-ui.
 
 4. **Verify**:
    ```bash
@@ -125,7 +132,7 @@ curl -X POST http://localhost:18056/bots \
   -H "X-API-Key: $USER_TOKEN" \
   -d '{
         "platform": "google_meet",
-        "native_meeting_id": "nox-nvbs-wpk",
+        "native_meeting_id": "fau-bvsd-owz",
         "display_name": "Scrum Recorder"
       }'
 ```
@@ -152,7 +159,7 @@ When the bot joins successfully you will see `status: active` in the `/bots/{id}
 
 ```bash
 curl -H "X-API-Key: $USER_TOKEN" \
-     http://localhost:18056/transcripts/google_meet/nox-nvbs-wpk
+     http://localhost:18056/transcripts/google_meet/pnz-iyod-ftf
 ```
 
 Response contains meeting metadata plus the ordered `segments` array (`start`, `end`, `text`, `language`, timestamps).

@@ -423,6 +423,7 @@ async def request_bot(
             platform=req.platform.value,
             platform_specific_id=native_meeting_id,
             status=MeetingStatus.REQUESTED.value,
+            summary_state="pending",  # seed insights pipeline state to satisfy NOT NULL constraint
             data=meeting_data,
             # Ensure other necessary fields like created_at are handled by the model or explicitly set
         )

@@ -38,6 +38,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      db-migrate:
+        condition: service_completed_successfully
     restart: unless-stopped
 
   bot-manager:
@@ -58,6 +60,12 @@ services:
       - DEVICE_TYPE=${DEVICE_TYPE:-cpu}
       - WHISPER_LIVE_URL=ws://whisperlive:9090/ws
       - ADMIN_TOKEN=${ADMIN_API_TOKEN}
+      - ENABLE_MEETING_ASSISTANT=${ENABLE_MEETING_ASSISTANT:-false}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-5-nano}
+      - ANALYSIS_INTERVAL_SECONDS=${ANALYSIS_INTERVAL_SECONDS:-10}
+      - MESSAGE_DEDUP_WINDOW_SECONDS=${MESSAGE_DEDUP_WINDOW_SECONDS:-300}
+      - MAX_MESSAGES_PER_MINUTE=${MAX_MESSAGES_PER_MINUTE:-2}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
@@ -65,13 +73,14 @@ services:
         condition: service_started
       postgres:
         condition: service_healthy
+      db-migrate:
+        condition: service_completed_successfully
     restart: unless-stopped
 
   whisperlive:
     build:
       context: .
       dockerfile: services/WhisperLive/Dockerfile.cpu
-    profiles: ["cpu"]
     environment:
       - REDIS_STREAM_URL=redis://redis:6379/0/transcription_segments
       - TRANSCRIPTION_COLLECTOR_URL=redis://redis:6379/0/transcription_segments
@@ -84,7 +93,15 @@ services:
       - DEVICE_TYPE=cpu
       - WHISPER_MODEL_SIZE=${WHISPER_MODEL_SIZE:-tiny}
       - WL_MAX_CLIENTS=${WL_MAX_CLIENTS:-10}
-    command: --port 9090 --backend faster_whisper --faster_whisper_custom_model_path ${WHISPER_MODEL_SIZE:-tiny}
+      - WHISPER_BACKEND=${WHISPER_BACKEND:-openai}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENAI_TRANSCRIBE_MODEL=${OPENAI_TRANSCRIBE_MODEL:-gpt-4o-transcribe}
+      - OPENAI_TRANSCRIBE_CHUNK_SEC=${OPENAI_TRANSCRIBE_CHUNK_SEC:-15}
+      - OPENAI_TRANSCRIBE_MIN_AUDIO_S=${OPENAI_TRANSCRIBE_MIN_AUDIO_S:-5}
+      - OPENAI_TRANSCRIBE_MAX_RETRIES=${OPENAI_TRANSCRIBE_MAX_RETRIES:-3}
+      - OPENAI_TRANSCRIBE_RETRY_BACKOFF_S=${OPENAI_TRANSCRIBE_RETRY_BACKOFF_S:-2}
+      - OPENAI_TRANSCRIBE_LANGUAGE=${OPENAI_TRANSCRIBE_LANGUAGE:-}
+    command: --port 9090 --backend ${WHISPER_BACKEND:-openai} --faster_whisper_custom_model_path ${WHISPER_MODEL_SIZE:-tiny}
     expose:
       - "9090"
       - "9091"
@@ -125,6 +142,181 @@ services:
         condition: service_started
       postgres:
         condition: service_healthy
+      db-migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  db-migrate:
+    build:
+      context: .
+      dockerfile: services/transcription-collector/Dockerfile
+    command: alembic upgrade head
+    volumes:
+      - ./alembic.ini:/app/alembic.ini
+      - ./libs/shared-models/alembic:/app/alembic
+    environment:
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=hackathon_bot
+      - DB_USER=postgres
+      - DB_PASSWORD=postgres
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  meeting-insights-worker:
+    build:
+      context: .
+      dockerfile: services/meeting-insights-worker/Dockerfile
+    volumes:
+      - ./team_roster.txt:/app/team_roster.txt:ro
+    ports:
+      - "${RAG_API_HOST_PORT:-18002}:8002"
+    environment:
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=hackathon_bot
+      - DB_USER=postgres
+      - DB_PASSWORD=postgres
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENAI_SUMMARY_MODEL=${OPENAI_SUMMARY_MODEL:-gpt-5-nano}
+      - OPENAI_EMBEDDING_MODEL=${OPENAI_EMBEDDING_MODEL:-text-embedding-3-small}
+      - INSIGHTS_POLL_INTERVAL=${INSIGHTS_POLL_INTERVAL:-30}
+      - INSIGHTS_BATCH_SIZE=${INSIGHTS_BATCH_SIZE:-1}
+      - INSIGHTS_TARGET_STATUSES=${INSIGHTS_TARGET_STATUSES:-completed,failed}
+      - TEAM_ROSTER_PATH=${TEAM_ROSTER_PATH:-/app/team_roster.txt}
+      - EMAIL_NOTIFIER_URL=${EMAIL_NOTIFIER_URL:-http://email-notifier:8003}
+      - JIRA_SYNC_URL=${JIRA_SYNC_URL:-http://jira-sync-worker:8004}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - RAG_LLM_MODEL=${RAG_LLM_MODEL:-gpt-5-nano}
+      - RAG_TOP_K=${RAG_TOP_K:-8}
+      - ASK_MEETING_TOP_K=${ASK_MEETING_TOP_K:-6}
+      - RAG_MAX_HISTORY=${RAG_MAX_HISTORY:-10}
+      - RAG_API_PORT=8002
+    depends_on:
+      postgres:
+        condition: service_healthy
+      db-migrate:
+        condition: service_completed_successfully
+      email-notifier:
+        condition: service_started
+      jira-sync-worker:
+        condition: service_started
+    restart: unless-stopped
+
+  meeting-insights-ui:
+    build:
+      context: .
+      dockerfile: services/meeting-insights-ui/Dockerfile
+    volumes:
+      - ./team_roster.txt:/app/team_roster.txt:ro
+    environment:
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=hackathon_bot
+      - DB_USER=postgres
+      - DB_PASSWORD=postgres
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENAI_EMBEDDING_MODEL=${OPENAI_EMBEDDING_MODEL:-text-embedding-3-small}
+      - TEAM_ROSTER_PATH=${TEAM_ROSTER_PATH:-/app/team_roster.txt}
+      - API_GATEWAY_URL=${API_GATEWAY_URL:-http://api-gateway:8000}
+      - ADMIN_API_TOKEN=${ADMIN_API_TOKEN}
+      - EMAIL_NOTIFIER_URL=${EMAIL_NOTIFIER_URL:-http://email-notifier:8003}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - RAG_API_URL=${RAG_API_URL:-http://meeting-insights-worker:8002}
+      - ENABLE_RAG_CHAT=${ENABLE_RAG_CHAT:-true}
+    ports:
+      - "${MEETING_UI_HOST_PORT:-18501}:8501"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      db-migrate:
+        condition: service_completed_successfully
+      meeting-insights-worker:
+        condition: service_started
+    restart: unless-stopped
+
+  email-notifier:
+    build:
+      context: .
+      dockerfile: services/email-notifier/Dockerfile
+    environment:
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=hackathon_bot
+      - DB_USER=postgres
+      - DB_PASSWORD=postgres
+      - SMTP_HOST=${SMTP_HOST:-smtp.gmail.com}
+      - SMTP_PORT=${SMTP_PORT:-587}
+      - SMTP_USER=${SMTP_USER:-}
+      - SMTP_PASSWORD=${SMTP_PASSWORD:-}
+      - SMTP_FROM_EMAIL=${SMTP_FROM_EMAIL:-${SMTP_USER}}
+      - SMTP_FROM_NAME=${SMTP_FROM_NAME:-AI Scrum Master}
+      - EMAIL_SEND_TIME=${EMAIL_SEND_TIME:-09:00}
+      - EMAIL_TIMEZONE=${EMAIL_TIMEZONE:-UTC}
+      - ENABLE_EMAIL_SCHEDULER=${ENABLE_EMAIL_SCHEDULER:-false}
+      - TARGET_EMAIL=${TARGET_EMAIL:-}
+      - DEADLINE_DAYS_AHEAD=${DEADLINE_DAYS_AHEAD:-7}
+      - EMAIL_NOTIFIER_PORT=${EMAIL_NOTIFIER_PORT:-8003}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    ports:
+      - "${EMAIL_NOTIFIER_HOST_PORT:-18003}:8003"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      db-migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  jira-sync-worker:
+    build:
+      context: .
+      dockerfile: services/jira-sync-worker/Dockerfile
+    volumes:
+      - ./team_roster.txt:/app/team_roster.txt:ro
+    ports:
+      - "${JIRA_SYNC_API_HOST_PORT:-18004}:8004"
+    environment:
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=hackathon_bot
+      - DB_USER=postgres
+      - DB_PASSWORD=postgres
+      - JIRA_BASE_URL=${JIRA_BASE_URL:-}
+      - JIRA_USER_EMAIL=${JIRA_USER_EMAIL:-}
+      - JIRA_API_TOKEN=${JIRA_API_TOKEN:-}
+      - JIRA_PROJECT_KEY=${JIRA_PROJECT_KEY:-}
+      - JIRA_ISSUE_TYPE_TASK=${JIRA_ISSUE_TYPE_TASK:-Task}
+      - JIRA_ISSUE_TYPE_BLOCKER=${JIRA_ISSUE_TYPE_BLOCKER:-Task}
+      - JIRA_ISSUE_TYPE_DEADLINE=${JIRA_ISSUE_TYPE_DEADLINE:-Task}
+      - JIRA_ISSUE_TYPE_EPIC=${JIRA_ISSUE_TYPE_EPIC:-Epic}
+      - JIRA_ISSUE_TYPE_FEATURE=${JIRA_ISSUE_TYPE_FEATURE:-Story}
+      - JIRA_ISSUE_TYPE_BUG=${JIRA_ISSUE_TYPE_BUG:-Bug}
+      - JIRA_LABEL_BLOCKER=${JIRA_LABEL_BLOCKER:-blocker}
+      - JIRA_LABEL_DEADLINE=${JIRA_LABEL_DEADLINE:-deadline}
+      - JIRA_LABEL_ACTION_ITEM=${JIRA_LABEL_ACTION_ITEM:-action-item}
+      - JIRA_LABEL_MEETING=${JIRA_LABEL_MEETING:-meeting-generated}
+      - JIRA_PRIORITY_HIGH=${JIRA_PRIORITY_HIGH:-High}
+      - JIRA_PRIORITY_MEDIUM=${JIRA_PRIORITY_MEDIUM:-Medium}
+      - JIRA_PRIORITY_LOW=${JIRA_PRIORITY_LOW:-Low}
+      - JIRA_SYNC_POLL_INTERVAL=${JIRA_SYNC_POLL_INTERVAL:-60}
+      - JIRA_SYNC_BATCH_SIZE=${JIRA_SYNC_BATCH_SIZE:-1}
+      - JIRA_DRY_RUN=${JIRA_DRY_RUN:-false}
+      - JIRA_RATE_LIMIT_REQUESTS=${JIRA_RATE_LIMIT_REQUESTS:-500}
+      - JIRA_RATE_LIMIT_WINDOW=${JIRA_RATE_LIMIT_WINDOW:-600}
+      - JIRA_RETRY_MAX_ATTEMPTS=${JIRA_RETRY_MAX_ATTEMPTS:-3}
+      - JIRA_RETRY_BACKOFF_BASE=${JIRA_RETRY_BACKOFF_BASE:-2.0}
+      - JIRA_SYNC_API_PORT=8004
+      - TEAM_ROSTER_PATH=${TEAM_ROSTER_PATH:-/app/team_roster.txt}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - TASK_CLASSIFICATION_MODEL=${TASK_CLASSIFICATION_MODEL:-gpt-4o-mini}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      db-migrate:
+        condition: service_completed_successfully
     restart: unless-stopped
 
   redis:
@@ -136,7 +328,7 @@ services:
     restart: unless-stopped
 
   postgres:
-    image: postgres:15-alpine
+    image: pgvector/pgvector:pg16
     environment:
       - POSTGRES_DB=hackathon_bot
       - POSTGRES_USER=postgres

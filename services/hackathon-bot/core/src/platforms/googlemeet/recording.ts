@@ -3,6 +3,10 @@ import { log } from "../../utils";
 import { BotConfig } from "../../types";
 import { WhisperLiveService } from "../../services/whisperlive";
 import { ensureBrowserUtils } from "../../utils/injection";
+import { TranscriptionBuffer } from "../../services/transcription-buffer";
+import { LLMAnalyzer } from "../../services/llm-analyzer";
+import { MessageDeduplicator } from "../../services/message-deduplicator";
+import { GoogleMeetChatService } from "../../services/chat";
 import {
   googleParticipantSelectors,
   googleSpeakingClassNames,
@@ -26,7 +30,153 @@ export async function startGoogleRecording(page: Page, botConfig: BotConfig): Pr
   log(`[Node.js] Using WhisperLive URL for Google Meet: ${whisperLiveUrl}`);
   log("Starting Google Meet recording with WebSocket connection");
 
+  // Initialize Active Meeting Assistant services
+  const enableAssistant = process.env.ENABLE_MEETING_ASSISTANT === 'true' || process.env.ENABLE_MEETING_ASSISTANT === '1';
+  const transcriptionBuffer = new TranscriptionBuffer();
+  let llmAnalyzer: LLMAnalyzer | null = null;
+  let messageDeduplicator: MessageDeduplicator | null = null;
+  let chatService: GoogleMeetChatService | null = null;
+  let analysisInterval: NodeJS.Timeout | null = null;
+  // Track bot's own messages to filter them from transcriptions
+  const botSentMessages: string[] = [];
+
+  if (enableAssistant) {
+    const openaiApiKey = process.env.OPENAI_API_KEY;
+    if (!openaiApiKey) {
+      log('[Meeting Assistant] WARNING: ENABLE_MEETING_ASSISTANT is true but OPENAI_API_KEY is not set. Assistant disabled.');
+    } else {
+      log('[Meeting Assistant] Initializing Active Meeting Assistant...');
+      llmAnalyzer = new LLMAnalyzer({
+        apiKey: openaiApiKey,
+        model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
+        analysisIntervalSeconds: parseInt(process.env.ANALYSIS_INTERVAL_SECONDS || '10'),
+      });
+      const dedupWindow = parseInt(process.env.MESSAGE_DEDUP_WINDOW_SECONDS || '300');
+      messageDeduplicator = new MessageDeduplicator(dedupWindow);
+      chatService = new GoogleMeetChatService(page);
+      log(`[Meeting Assistant] Initialized with analysis interval: ${llmAnalyzer.getConfig().analysisIntervalSeconds}s, dedup window: ${dedupWindow}s`);
+    }
+  }
+
   await ensureBrowserUtils(page, require('path').join(__dirname, '../../browser-utils.global.js'));
+
+  // Expose function for browser to add transcriptions to Node.js buffer
+  // Also filter out bot's own messages to prevent them from being transcribed
+  if (enableAssistant && llmAnalyzer) {
+    await page.exposeFunction('addTranscriptionToBuffer', (text: string, timestamp?: number) => {
+      if (!text || text.trim().length === 0) {
+        return;
+      }
+
+      const normalizedText = text.toLowerCase().trim();
+      
+      // Check if this transcription matches any bot-sent message
+      const isBotMessage = botSentMessages.some((botMsg) => {
+        // Check if transcription contains the bot message (fuzzy match)
+        return normalizedText.includes(botMsg) || botMsg.includes(normalizedText);
+      });
+
+      if (isBotMessage) {
+        log(`[Meeting Assistant] Filtered out bot's own message from transcription: "${text.substring(0, 50)}..."`);
+        return; // Don't add bot's own messages to buffer
+      }
+
+      transcriptionBuffer.addTranscription(text, timestamp);
+    });
+  }
+
+  // Set up periodic analysis on Node.js side - expose BEFORE page.evaluate so browser can call it
+  if (enableAssistant && llmAnalyzer && chatService && messageDeduplicator) {
+    const analysisIntervalSeconds = llmAnalyzer.getConfig().analysisIntervalSeconds;
+    const maxMessagesPerMinute = parseInt(process.env.MAX_MESSAGES_PER_MINUTE || '2');
+    let messagesSentThisMinute = 0;
+    let lastMinuteReset = Date.now();
+
+    // Expose function to start periodic analysis (called from browser after SERVER_READY)
+    await page.exposeFunction('startPeriodicAnalysis', async () => {
+      log('[Meeting Assistant] Starting periodic analysis...');
+      
+      if (analysisInterval) {
+        clearInterval(analysisInterval);
+      }
+
+      analysisInterval = setInterval(async () => {
+        try {
+          // Reset message counter every minute
+          const now = Date.now();
+          if (now - lastMinuteReset >= 60000) {
+            messagesSentThisMinute = 0;
+            lastMinuteReset = now;
+          }
+
+          // Check rate limit
+          if (messagesSentThisMinute >= maxMessagesPerMinute) {
+            log(`[Meeting Assistant] Rate limit reached (${maxMessagesPerMinute} messages/min). Skipping analysis.`);
+            return;
+          }
+
+          // Get recent transcriptions (last 60 seconds for context)
+          const recentTranscriptions = transcriptionBuffer.getRecentTranscriptions(60);
+          
+          if (recentTranscriptions.length === 0) {
+            return; // No transcriptions to analyze
+          }
+
+          log(`[Meeting Assistant] Analyzing ${recentTranscriptions.length} transcriptions...`);
+          
+          // Analyze transcriptions
+          const analysis = await llmAnalyzer.analyze(recentTranscriptions);
+          
+          if (analysis.hasIssues && analysis.issues.length > 0) {
+            log(`[Meeting Assistant] Found ${analysis.issues.length} issues`);
+            
+            // Send messages for each issue (with deduplication and rate limiting)
+            for (const issue of analysis.issues) {
+              if (messagesSentThisMinute >= maxMessagesPerMinute) {
+                log('[Meeting Assistant] Rate limit reached. Stopping message sending.');
+                break;
+              }
+
+              // Check deduplication
+              if (!messageDeduplicator.shouldSend(issue.suggested_message)) {
+                log(`[Meeting Assistant] Skipping duplicate message: "${issue.suggested_message}"`);
+                continue;
+              }
+
+              // Send message to chat
+              try {
+                const success = await chatService.sendChatMessage(issue.suggested_message);
+                if (success) {
+                  messagesSentThisMinute++;
+                  // Track bot's message to filter it from transcriptions
+                  botSentMessages.push(issue.suggested_message.toLowerCase().trim());
+                  // Keep only last 20 messages to avoid memory growth
+                  if (botSentMessages.length > 20) {
+                    botSentMessages.shift();
+                  }
+                  log(`[Meeting Assistant] Sent message: "${issue.suggested_message}"`);
+                  
+                  // Rate limit: wait 2 seconds between messages
+                  await new Promise((resolve) => setTimeout(resolve, 2000));
+                } else {
+                  log(`[Meeting Assistant] Failed to send message: "${issue.suggested_message}"`);
+                }
+              } catch (error: any) {
+                log(`[Meeting Assistant] Error sending message: ${error.message}`);
+              }
+            }
+
+            // Cleanup old deduplication entries
+            messageDeduplicator.cleanup();
+          }
+        } catch (error: any) {
+          log(`[Meeting Assistant] Error in periodic analysis: ${error.message}`);
+        }
+      }, analysisIntervalSeconds * 1000);
+
+      log(`[Meeting Assistant] Periodic analysis started (every ${analysisIntervalSeconds}s)`);
+    });
+  }
 
   // Pass the necessary config fields and the resolved URL into the page context
   await page.evaluate(
@@ -187,6 +337,118 @@ export async function startGoogleRecording(page: Page, botConfig: BotConfig): Pr
                   if (!whisperLiveService.isReady() && data["status"] === "SERVER_READY") {
                     whisperLiveService.setServerReady(true);
                     logFn("Google Meet Server is ready.");
+                    
+                    // Start periodic analysis for Active Meeting Assistant
+                    if (typeof (window as any).startPeriodicAnalysis === 'function') {
+                      try {
+                        (window as any).startPeriodicAnalysis();
+                      } catch (e) {
+                        logFn(`[Meeting Assistant] Error starting periodic analysis: ${e}`);
+                      }
+                    }
+                    
+                    // TEST: Send "Hi" message to chat after server is ready
+                    // This tests the chat functionality
+                    setTimeout(async () => {
+                      try {
+                        logFn("[Chat Test] Attempting to send 'Hi' to chat...");
+                        const chatButtonSelectors = [
+                          'button[aria-label*="Chat"]',
+                          'button[aria-label*="chat"]'
+                        ];
+                        
+                        // Try to open chat
+                        let chatOpened = false;
+                        for (const selector of chatButtonSelectors) {
+                          try {
+                            const chatButton = document.querySelector(selector) as HTMLElement;
+                            if (chatButton && chatButton.offsetParent !== null) {
+                              chatButton.click();
+                              await new Promise(resolve => setTimeout(resolve, 1000));
+                              chatOpened = true;
+                              logFn(`[Chat Test] Opened chat panel using selector: ${selector}`);
+                              break;
+                            }
+                          } catch (e) {
+                            // Continue to next selector
+                          }
+                        }
+                        
+                        if (!chatOpened) {
+                          logFn("[Chat Test] Could not open chat panel");
+                          return;
+                        }
+                        
+                        // Try to find chat input and send message
+                        const chatInputSelectors = [
+                          'textarea[aria-label*="Send a message"]',
+                          'textarea[aria-label*="send a message"]',
+                          'div[contenteditable="true"][aria-label*="message"]',
+                          'textarea[placeholder*="message"]'
+                        ];
+                        
+                        let messageSent = false;
+                        for (const selector of chatInputSelectors) {
+                          try {
+                            const input = document.querySelector(selector) as HTMLElement;
+                            if (input && input.offsetParent !== null) {
+                              input.focus();
+                              await new Promise(resolve => setTimeout(resolve, 200));
+                              
+                              // Handle contenteditable vs textarea
+                              if (input.tagName.toLowerCase() === 'div' || input.tagName.toLowerCase() === 'span') {
+                                input.textContent = 'Hi';
+                                input.dispatchEvent(new Event('input', { bubbles: true }));
+                              } else {
+                                (input as HTMLTextAreaElement).value = 'Hi';
+                                input.dispatchEvent(new Event('input', { bubbles: true }));
+                              }
+                              
+                              await new Promise(resolve => setTimeout(resolve, 300));
+                              
+                              // Try to find send button or press Enter
+                              const sendButtonSelectors = [
+                                'button[aria-label*="Send"]',
+                                'button[aria-label*="send"]'
+                              ];
+                              
+                              let sent = false;
+                              for (const sendSelector of sendButtonSelectors) {
+                                try {
+                                  const sendButton = document.querySelector(sendSelector) as HTMLElement;
+                                  if (sendButton && sendButton.offsetParent !== null) {
+                                    sendButton.click();
+                                    sent = true;
+                                    break;
+                                  }
+                                } catch (e) {
+                                  // Continue
+                                }
+                              }
+                              
+                              if (!sent) {
+                                // Try pressing Enter
+                                input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
+                                input.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
+                              }
+                              
+                              logFn("[Chat Test] Sent 'Hi' message to chat");
+                              messageSent = true;
+                              break;
+                            }
+                          } catch (e) {
+                            // Continue to next selector
+                          }
+                        }
+                        
+                        if (!messageSent) {
+                          logFn("[Chat Test] Could not find chat input to send message");
+                        }
+                      } catch (error: any) {
+                        logFn(`[Chat Test] Error sending test message: ${error?.message || error}`);
+                      }
+                    }, 3000); // Wait 3 seconds after SERVER_READY to ensure UI is stable
+                    
                     return;
                   }
                   if (data["language"]) {
@@ -211,6 +473,15 @@ export async function startGoogleRecording(page: Page, botConfig: BotConfig): Pr
                       if (transcriptKey && transcriptKey !== (window as any).__lastTranscript) {
                         (window as any).__lastTranscript = transcriptKey;
                         logFn(`Transcript: ${transcriptKey}`);
+                        
+                        // Add to transcription buffer for Active Meeting Assistant
+                        if (typeof (window as any).addTranscriptionToBuffer === 'function') {
+                          try {
+                            (window as any).addTranscriptionToBuffer(transcriptKey, Date.now());
+                          } catch (e) {
+                            // Silently fail if buffer function not available
+                          }
+                        }
                       }
                     }
                   }
@@ -642,4 +913,9 @@ export async function startGoogleRecording(page: Page, botConfig: BotConfig): Pr
   
   // After page.evaluate finishes, cleanup services
   await whisperLiveService.cleanup();
+  
+  // Cleanup analysis interval on exit
+  if (analysisInterval) {
+    clearInterval(analysisInterval);
+  }
 }
